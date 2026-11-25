@@ -309,6 +309,38 @@ function(kokkos_fix_compile_options)
   endif()
 endfunction()
 
+#-----------------------------------------------------------------------------
+# Kokkos built with HIP as a CMake language (Kokkos_COMPILE_LANGUAGE is HIP) can
+# depend on targets, such as hip::device through rocThrust, that add HIP compiler
+# options to C++ sources and links. Viskores compiles its device sources as HIP
+# and its other sources as C++, with a C++ compiler that need not support HIP.
+# This function removes the C++ options of these targets.
+function(kokkos_remove_hip_cxx_options)
+  set(targets Kokkos::kokkos)
+  set(seen_targets)
+
+  while(targets)
+    list(GET targets 0 target_name)
+    list(REMOVE_AT targets 0)
+
+    get_target_property(link_libraries ${target_name} INTERFACE_LINK_LIBRARIES)
+    foreach(lib_target IN LISTS link_libraries)
+      if (TARGET ${lib_target} AND NOT lib_target IN_LIST seen_targets)
+        list(APPEND seen_targets ${lib_target})
+        list(APPEND targets ${lib_target})
+        foreach(property IN ITEMS INTERFACE_COMPILE_OPTIONS INTERFACE_LINK_OPTIONS INTERFACE_LINK_LIBRARIES)
+          get_target_property(values ${lib_target} ${property})
+          if (values)
+            string(REGEX REPLACE "\\$<\\$<(COMPILE|LINK)_LANGUAGE:CXX>:[^>]*>" "" values "${values}")
+            list(REMOVE_ITEM values "")
+            set_property(TARGET ${lib_target} PROPERTY ${property} "${values}")
+          endif()
+        endforeach()
+      endif()
+    endforeach()
+  endwhile()
+endfunction()
+
 if(Viskores_ENABLE_KOKKOS AND NOT TARGET viskores_kokkos)
   cmake_minimum_required(VERSION 3.15 FATAL_ERROR)
 
@@ -339,6 +371,12 @@ if(Viskores_ENABLE_KOKKOS AND NOT TARGET viskores_kokkos)
     install(TARGETS viskores_kokkos_cuda EXPORT ${Viskores_EXPORT_NAME})
   elseif(HIP IN_LIST Kokkos_DEVICES)
     cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
+    # The Kokkos compile options with the GPU architectures are removed below,
+    # so compile for the GPU architectures of Kokkos unless set by the user.
+    if(NOT DEFINED CMAKE_HIP_ARCHITECTURES AND Kokkos_HIP_ARCHITECTURES)
+      set(CMAKE_HIP_ARCHITECTURES ${Kokkos_HIP_ARCHITECTURES})
+      message(STATUS "Detected HIP arch from Kokkos: ${CMAKE_HIP_ARCHITECTURES}")
+    endif()
     enable_language(HIP)
 
     set_target_properties(Kokkos::kokkoscore PROPERTIES
@@ -355,6 +393,8 @@ if(Viskores_ENABLE_KOKKOS AND NOT TARGET viskores_kokkos)
 
   if (TARGET viskores_kokkos_cuda)
     kokkos_fix_compile_options()
+  elseif (TARGET viskores_kokkos_hip AND Kokkos_COMPILE_LANGUAGE STREQUAL "HIP")
+    kokkos_remove_hip_cxx_options()
   endif()
 endif()
 
